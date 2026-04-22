@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+
+autostart.log
+app_launch.log
+
+.vscode/
+
+*.swp
+.DS_Store
