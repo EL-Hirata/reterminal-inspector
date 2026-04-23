@@ -4,6 +4,7 @@ import asyncio
 import subprocess
 import threading
 import time
+from dataclasses import dataclass, field
 
 from app.ble_client import M5BleClient
 from app.config import AppConfig
@@ -11,10 +12,45 @@ from app.leds import ReTerminalLeds
 from app.special_buttons import SpecialButtonMonitor
 
 
+@dataclass
+class WioState:
+    device_status: str = "WAIT"
+    ble_connected: bool = False
+    wio_led_on: bool = False
+    idn: str = "-"
+    last_rx: str = "-"
+    last_tx: str = "-"
+    light: int = 0
+    ax: float = 0.0
+    ay: float = 0.0
+    az: float = 0.0
+    buttons: dict[str, bool] = field(
+        default_factory=lambda: {
+            "A": False,
+            "B": False,
+            "C": False,
+            "UP": False,
+            "DOWN": False,
+            "LEFT": False,
+            "RIGHT": False,
+            "PRESS": False,
+        }
+    )
+    rt_buttons: dict[str, bool] = field(
+        default_factory=lambda: {
+            "F1": False,
+            "F2": False,
+            "F3": False,
+            "○": False,
+        }
+    )
+
+
 class AppController:
     def __init__(self, config: AppConfig, gui) -> None:
         self.config = config
         self.gui = gui
+        self.state = WioState()
 
         self.loop = asyncio.new_event_loop()
         self.loop_thread = threading.Thread(target=self._run_loop, daemon=True)
@@ -25,25 +61,13 @@ class AppController:
             notify_char_uuid=self.config.ble_notify_char_uuid,
             write_char_uuid=self.config.ble_write_char_uuid,
             scan_timeout_sec=self.config.ble_scan_timeout_sec,
+            service_uuid=self.config.ble_service_uuid,
+            debug_log=self._log_ble_debug,
         )
 
         self.leds = ReTerminalLeds()
         self.led_ready = False
-        self.ble_connected = False
         self.rx_indicator_job: str | None = None
-
-        self.button_states: dict[str, bool] = {
-            "F1": False,
-            "F2": False,
-            "F3": False,
-            "○": False,
-        }
-        self.key_to_button = {
-            "a": "F1",
-            "s": "F2",
-            "d": "F3",
-            "f": "○",
-        }
 
         self.f_press_time: float | None = None
         self.f_long_press_triggered = False
@@ -55,18 +79,23 @@ class AppController:
             on_key_release=self._on_gpio_key_release_threadsafe,
             on_sleep_press=self._noop_sleep_press,
             on_sleep_release=self._noop_sleep_release,
-            on_debug=lambda msg: self.gui.root.after(0, lambda: self.gui.append_log(f"[GPIO] {msg}")),
+            on_debug=lambda msg: self.gui.root.after(
+                0, lambda: self.gui.append_log(f"[GPIO] {msg}")
+            ),
         )
+
+    def _log_ble_debug(self, message: str) -> None:
+        self._safe_ui(lambda: self.gui.append_log(message))
 
     def start(self) -> None:
         self._init_leds()
-        self._refresh_button_indicators()
         self.special_monitor.start()
         self.gui.append_log("アプリ起動")
-        self.gui.append_log("キー入力待機: a / s / d / f")
+        self.gui.append_log("F1=GET SENSOR / F2=LED TOGGLE / F3=*IDN?")
+        self.gui.append_log("○短押し=BLE接続切替 / ○長押し3秒=Shutdown")
         self.gui.append_log("上部ボタン機能は無効")
-        self.gui.append_log("○短押し=BLE接続 / ○長押し3秒=シャットダウン確認")
         self._update_ble_status_led()
+        self.gui.render(self.state)
 
     def stop(self) -> None:
         async def _cleanup_ble() -> None:
@@ -134,8 +163,8 @@ class AppController:
             return
 
         try:
-            self.leds.off_all()
-            if self.ble_connected:
+            self.leds.set_led("usr_led0", 0)
+            if self.state.ble_connected:
                 self.leds.set_led("usr_led1", 0)
                 self.leds.set_led("usr_led2", 255)
                 self.gui.set_led_text("LED: BLE接続(緑)")
@@ -174,6 +203,9 @@ class AppController:
         except Exception as exc:
             self.gui.append_log(f"RX LEDエラー: {exc}")
 
+    def _refresh_gui(self) -> None:
+        self.gui.render(self.state)
+
     def turn_off_leds(self) -> None:
         if not self.led_ready:
             self.gui.set_led_text("LED: 使用不可")
@@ -193,70 +225,54 @@ class AppController:
     def _on_gpio_key_release_threadsafe(self, key_name: str) -> None:
         self.gui.root.after(0, lambda: self._on_key_release(key_name))
 
-    def _make_wio_btn_payload(self) -> str:
-        a = 1 if self.button_states["F1"] else 0
-        b = 1 if self.button_states["F2"] else 0
-        c = 1 if self.button_states["F3"] else 0
-        return f"M5:BTN {a},{b},{c}"
-
-    def _send_wio_button_state(self) -> None:
-        if not self.ble_connected:
-            return
-
-        payload = self._make_wio_btn_payload()
-
-        async def _task() -> None:
-            try:
-                await self.ble.send_text(payload)
-                self._safe_ui(lambda: self.gui.append_log(f"送信: {payload}"))
-            except Exception as exc:
-                self._safe_ui(lambda: self.gui.append_log(f"送信失敗: {exc}"))
-
-        self._submit_coro(_task())
+    def _key_to_button_name(self, key_name: str) -> str:
+        return {
+            "a": "F1",
+            "s": "F2",
+            "d": "F3",
+            "f": "○",
+        }[key_name]
 
     def _on_key_press(self, key_name: str) -> None:
-        button_name = self.key_to_button[key_name]
+        button_name = self._key_to_button_name(key_name)
 
-        if self.button_states[button_name]:
+        if self.state.rt_buttons[button_name]:
             return
 
-        self.button_states[button_name] = True
-        self._refresh_button_indicators()
-
-        text = f"{button_name} 押下 (key={key_name})"
-        self.gui.set_button_text(text)
-        self.gui.set_status("物理ボタン入力")
-        self.gui.append_log(text)
+        self.state.rt_buttons[button_name] = True
+        self.gui.append_log(f"{button_name} 押下")
+        self._refresh_gui()
 
         if button_name == "○":
             self.f_press_time = time.monotonic()
             self.f_long_press_triggered = False
             self.gui.root.after(100, self._check_f_long_press)
-            return
-
-        self._send_wio_button_state()
 
     def _on_key_release(self, key_name: str) -> None:
-        button_name = self.key_to_button[key_name]
+        button_name = self._key_to_button_name(key_name)
 
-        if not self.button_states[button_name]:
+        if not self.state.rt_buttons[button_name]:
             return
 
-        self.button_states[button_name] = False
-        self._refresh_button_indicators()
+        self.state.rt_buttons[button_name] = False
+        self.gui.append_log(f"{button_name} 離上")
+        self._refresh_gui()
 
-        self.gui.set_button_text(f"{button_name} 離上")
-        self.gui.set_status("待機中")
-        self.gui.append_log(f"{button_name} 離上 (key={key_name})")
-
+        if button_name == "F1":
+            self.send_get_sensor()
+            return
+        if button_name == "F2":
+            self.send_led_toggle()
+            return
+        if button_name == "F3":
+            self.send_idn()
+            return
         if button_name == "○":
             was_long = self.f_long_press_triggered
             self.f_press_time = None
             if not was_long:
-                self.connect_ble()
+                self.toggle_ble_connection()
             return
-
-        self._send_wio_button_state()
 
     def _check_f_long_press(self) -> None:
         if self.f_press_time is None:
@@ -268,15 +284,10 @@ class AppController:
         elapsed_ms = (time.monotonic() - self.f_press_time) * 1000
         if elapsed_ms >= self.f_long_press_ms:
             self.f_long_press_triggered = True
-            self.gui.set_button_text("○ 長押し")
             self.gui.append_log("○ 長押し検出")
             self._show_shutdown_dialog()
         else:
             self.gui.root.after(100, self._check_f_long_press)
-
-    def _refresh_button_indicators(self) -> None:
-        for button_name, is_on in self.button_states.items():
-            self.gui.set_indicator(button_name, is_on)
 
     def _show_shutdown_dialog(self) -> None:
         result = self.gui.ask_shutdown_dialog()
@@ -286,7 +297,6 @@ class AppController:
             self._shutdown_system()
         else:
             self.gui.append_log("シャットダウン取消")
-            self.gui.set_button_text("○ 長押し取消")
 
     def _shutdown_system(self) -> None:
         try:
@@ -297,7 +307,12 @@ class AppController:
             )
         except Exception as exc:
             self.gui.append_log(f"シャットダウン失敗: {exc}")
-            self.gui.set_button_text("シャットダウン失敗")
+
+    def toggle_ble_connection(self) -> None:
+        if self.state.ble_connected:
+            self.disconnect_ble()
+        else:
+            self.connect_ble()
 
     def scan_ble(self) -> None:
         async def _task() -> None:
@@ -317,19 +332,20 @@ class AppController:
 
                 self._safe_ui(_update)
             except Exception as exc:
-                self._safe_ui(lambda: self.gui.set_status(f"BLE scan 失敗: {exc}"))
-                self._safe_ui(lambda: self.gui.append_log(f"BLE scan 失敗: {exc}"))
+                self._safe_ui(lambda: self.gui.set_status(f"BLE scan 失敗: {type(exc).__name__}: {exc}"))
+                self._safe_ui(lambda: self.gui.append_log(f"BLE scan 失敗: {type(exc).__name__}: {exc}"))
 
         self._submit_coro(_task())
 
     def connect_ble(self) -> None:
-        if self.ble_connected:
+        if self.state.ble_connected:
             self.gui.append_log("BLE は既に接続中")
             self.gui.set_status("BLE接続中")
             return
 
         async def _task() -> None:
             try:
+                self._safe_ui(lambda: self.gui.append_log("[BLE] connect sequence start"))
                 ok = await self.ble.connect()
                 if not ok:
                     self._safe_ui(lambda: self.gui.set_ble_text("BLE: 対象未検出"))
@@ -338,21 +354,32 @@ class AppController:
                     self._safe_ui(self._update_ble_status_led)
                     return
 
+                self._safe_ui(lambda: self.gui.append_log("[BLE] connected, start notify"))
                 await self.ble.start_notify(self._notify_handler)
+
+                self._safe_ui(lambda: self.gui.append_log("[BLE] notify started, send *IDN?"))
                 await self.ble.send_text("*IDN?")
 
-                self.ble_connected = True
+                self.state.ble_connected = True
+                self.state.device_status = "CONNECTED"
 
                 self._safe_ui(lambda: self.gui.set_ble_text("BLE: 接続中"))
                 self._safe_ui(lambda: self.gui.set_status("BLE接続成功"))
                 self._safe_ui(lambda: self.gui.append_log("BLE接続成功"))
                 self._safe_ui(self._update_ble_status_led)
+                self._safe_ui(self._refresh_gui)
             except Exception as exc:
-                self.ble_connected = False
+                self.state.ble_connected = False
+                self.state.device_status = "WAIT"
                 self._safe_ui(lambda: self.gui.set_ble_text("BLE: エラー"))
-                self._safe_ui(lambda: self.gui.set_status(f"BLE接続失敗: {exc}"))
-                self._safe_ui(lambda: self.gui.append_log(f"BLE接続失敗: {exc}"))
+                self._safe_ui(
+                    lambda: self.gui.set_status(f"BLE接続失敗: {type(exc).__name__}: {exc}")
+                )
+                self._safe_ui(
+                    lambda: self.gui.append_log(f"BLE接続失敗: {type(exc).__name__}: {exc}")
+                )
                 self._safe_ui(self._update_ble_status_led)
+                self._safe_ui(self._refresh_gui)
 
         self._submit_coro(_task())
 
@@ -361,41 +388,119 @@ class AppController:
             try:
                 await self.ble.stop_notify()
                 await self.ble.disconnect()
-                self.ble_connected = False
+                self.state.ble_connected = False
+                self.state.device_status = "WAIT"
                 self._safe_ui(lambda: self.gui.set_ble_text("BLE: 未接続"))
                 self._safe_ui(lambda: self.gui.set_status("BLE切断"))
                 self._safe_ui(lambda: self.gui.append_log("BLE切断"))
                 self._safe_ui(self._update_ble_status_led)
+                self._safe_ui(self._refresh_gui)
             except Exception as exc:
-                self.ble_connected = False
-                self._safe_ui(lambda: self.gui.set_status(f"BLE切断失敗: {exc}"))
-                self._safe_ui(lambda: self.gui.append_log(f"BLE切断失敗: {exc}"))
+                self.state.ble_connected = False
+                self.state.device_status = "WAIT"
+                self._safe_ui(
+                    lambda: self.gui.set_status(f"BLE切断失敗: {type(exc).__name__}: {exc}")
+                )
+                self._safe_ui(
+                    lambda: self.gui.append_log(f"BLE切断失敗: {type(exc).__name__}: {exc}")
+                )
                 self._safe_ui(self._update_ble_status_led)
+                self._safe_ui(self._refresh_gui)
 
         self._submit_coro(_task())
 
     def send_idn(self) -> None:
         async def _task() -> None:
             try:
-                await self.ble.send_text("*IDN?")
+                cmd = "*IDN?"
+                await self.ble.send_text(cmd)
+                self.state.last_tx = cmd
                 self._safe_ui(lambda: self.gui.set_status("IDN送信"))
-                self._safe_ui(lambda: self.gui.append_log("送信: *IDN?"))
+                self._safe_ui(lambda: self.gui.append_log(f"送信: {cmd}"))
+                self._safe_ui(self._refresh_gui)
             except Exception as exc:
-                self._safe_ui(lambda: self.gui.set_status(f"送信失敗: {exc}"))
-                self._safe_ui(lambda: self.gui.append_log(f"送信失敗: {exc}"))
+                self._safe_ui(lambda: self.gui.set_status(f"送信失敗: {type(exc).__name__}: {exc}"))
+                self._safe_ui(lambda: self.gui.append_log(f"送信失敗: {type(exc).__name__}: {exc}"))
+
+        self._submit_coro(_task())
+
+    def send_led_toggle(self) -> None:
+        async def _task() -> None:
+            try:
+                cmd = "LED TOGGLE"
+                await self.ble.send_text(cmd)
+                self.state.last_tx = cmd
+                self._safe_ui(lambda: self.gui.set_status("LED TOGGLE送信"))
+                self._safe_ui(lambda: self.gui.append_log(f"送信: {cmd}"))
+                self._safe_ui(self._refresh_gui)
+            except Exception as exc:
+                self._safe_ui(lambda: self.gui.set_status(f"送信失敗: {type(exc).__name__}: {exc}"))
+                self._safe_ui(lambda: self.gui.append_log(f"送信失敗: {type(exc).__name__}: {exc}"))
+
+        self._submit_coro(_task())
+
+    def send_get_sensor(self) -> None:
+        async def _task() -> None:
+            try:
+                cmd = "GET SENSOR"
+                await self.ble.send_text(cmd)
+                self.state.last_tx = cmd
+                self._safe_ui(lambda: self.gui.set_status("GET SENSOR送信"))
+                self._safe_ui(lambda: self.gui.append_log(f"送信: {cmd}"))
+                self._safe_ui(self._refresh_gui)
+            except Exception as exc:
+                self._safe_ui(lambda: self.gui.set_status(f"送信失敗: {type(exc).__name__}: {exc}"))
+                self._safe_ui(lambda: self.gui.append_log(f"送信失敗: {type(exc).__name__}: {exc}"))
 
         self._submit_coro(_task())
 
     def _notify_handler(self, _sender: int, data: bytearray) -> None:
-        text = data.decode("utf-8", errors="ignore")
+        text = data.decode("utf-8", errors="ignore").strip()
 
         def _update() -> None:
+            self.state.last_rx = text
             self.gui.set_recv_text(text)
             self.gui.set_status("BLE受信")
             self.gui.append_log(f"受信: {text}")
             self._pulse_rx_led()
-
-            if text.startswith("WIO:BTN "):
-                self.gui.set_button_text(text)
+            self._parse_notify(text)
+            self.gui.render(self.state)
 
         self._safe_ui(_update)
+
+    def _parse_notify(self, text: str) -> None:
+        if text.startswith("Seeed,"):
+            self.state.idn = text
+            return
+
+        parts = text.split(",")
+
+        if len(parts) >= 4 and parts[0] == "EVT" and parts[1] == "BTN":
+            name = parts[2].upper()
+            value = parts[3] == "1"
+            if name in self.state.buttons:
+                self.state.buttons[name] = value
+            return
+
+        if len(parts) >= 3 and parts[0] == "SENSOR" and parts[1] == "LIGHT":
+            try:
+                self.state.light = int(parts[2])
+            except ValueError:
+                pass
+            return
+
+        if len(parts) >= 5 and parts[0] == "SENSOR" and parts[1] == "ACC":
+            try:
+                self.state.ax = float(parts[2])
+                self.state.ay = float(parts[3])
+                self.state.az = float(parts[4])
+            except ValueError:
+                pass
+            return
+
+        if len(parts) >= 3 and parts[0] == "STATE" and parts[1] == "LED":
+            self.state.wio_led_on = parts[2].upper() == "ON"
+            return
+
+        if text.startswith("ERR,"):
+            self.gui.append_log(f"WIO ERROR: {text}")
