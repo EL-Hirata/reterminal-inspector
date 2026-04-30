@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import ttk
 
 
 class MainWindow:
@@ -35,56 +34,61 @@ class MainWindow:
         self.canvas.pack(fill="both", expand=True)
 
         self.toolbar = tk.Frame(self.root, bg="#222222")
-        self.toolbar.place(x=20, y=620)
+        self.toolbar.place(x=16, y=635)
 
         self.scan_button = tk.Button(
             self.toolbar,
             text="BLEスキャン",
-            font=("", 12, "bold"),
-            width=12,
+            font=("", 14, "bold"),
+            width=13,
+            height=3,
             command=lambda: self.controller.scan_ble() if self.controller else None,
         )
-        self.scan_button.grid(row=0, column=0, padx=4)
+        self.scan_button.grid(row=0, column=0, padx=6, pady=6)
 
         self.connect_button = tk.Button(
             self.toolbar,
             text="BLE接続",
-            font=("", 12, "bold"),
-            width=12,
+            font=("", 14, "bold"),
+            width=13,
+            height=3,
             command=lambda: self.controller.connect_ble() if self.controller else None,
         )
-        self.connect_button.grid(row=0, column=1, padx=4)
+        self.connect_button.grid(row=0, column=1, padx=6, pady=6)
 
         self.idn_button = tk.Button(
             self.toolbar,
             text="IDN送信",
-            font=("", 12, "bold"),
-            width=12,
+            font=("", 14, "bold"),
+            width=13,
+            height=3,
             command=lambda: self.controller.send_idn() if self.controller else None,
         )
-        self.idn_button.grid(row=0, column=2, padx=4)
+        self.idn_button.grid(row=0, column=2, padx=6, pady=6)
 
         self.disconnect_button = tk.Button(
             self.toolbar,
             text="BLE切断",
-            font=("", 12, "bold"),
-            width=12,
+            font=("", 14, "bold"),
+            width=13,
+            height=3,
             command=lambda: self.controller.disconnect_ble() if self.controller else None,
         )
-        self.disconnect_button.grid(row=0, column=3, padx=4)
+        self.disconnect_button.grid(row=0, column=3, padx=6, pady=6)
 
         self.exit_button = tk.Button(
             self.toolbar,
             text="終了",
-            font=("", 12, "bold"),
-            width=10,
+            font=("", 14, "bold"),
+            width=11,
+            height=3,
             bg="#aa3333",
             fg="white",
             activebackground="#882222",
             activeforeground="white",
             command=self.on_close,
         )
-        self.exit_button.grid(row=0, column=4, padx=4)
+        self.exit_button.grid(row=0, column=4, padx=6, pady=6)
 
         self._bind_keys()
 
@@ -218,7 +222,7 @@ class MainWindow:
         self._draw_panel(420, 20, 380, 165, "SENSOR")
         self._draw_panel(820, 20, 430, 290, "WIO BUTTONS")
         self._draw_panel(20, 200, 780, 130, "reTerminal BUTTONS")
-        self._draw_panel(20, 345, 1230, 220, "COMM / LOG")
+        self._draw_panel(20, 345, 1230, 275, "COMM / LOG")
 
         self._draw_system_panel(state)
         self._draw_sensor_panel(state)

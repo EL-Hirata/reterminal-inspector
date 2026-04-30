@@ -320,8 +320,12 @@ class AppController:
                 results = await self.ble.scan()
                 lines = [f"{r.name or '(no name)'} / {r.address}" for r in results]
                 if not lines:
-                    self._safe_ui(lambda: self.gui.append_log("BLE scan: デバイスなし"))
-                    self._safe_ui(lambda: self.gui.set_status("BLE scan: デバイスなし"))
+                    def _update_no_devices() -> None:
+                        self.gui.append_log("BLE scan: デバイスなし")
+                        self.gui.set_status("BLE scan: デバイスなし")
+                        self._refresh_gui()
+
+                    self._safe_ui(_update_no_devices)
                     return
 
                 def _update() -> None:
@@ -329,11 +333,18 @@ class AppController:
                     self.gui.append_log("BLE scan 結果:")
                     for line in lines:
                         self.gui.append_log(f"  {line}")
+                    self._refresh_gui()
 
                 self._safe_ui(_update)
             except Exception as exc:
-                self._safe_ui(lambda: self.gui.set_status(f"BLE scan 失敗: {type(exc).__name__}: {exc}"))
-                self._safe_ui(lambda: self.gui.append_log(f"BLE scan 失敗: {type(exc).__name__}: {exc}"))
+                message = f"BLE scan 失敗: {type(exc).__name__}: {exc}"
+
+                def _update_error() -> None:
+                    self.gui.set_status(message)
+                    self.gui.append_log(message)
+                    self._refresh_gui()
+
+                self._safe_ui(_update_error)
 
         self._submit_coro(_task())
 
@@ -369,15 +380,20 @@ class AppController:
                 self._safe_ui(self._update_ble_status_led)
                 self._safe_ui(self._refresh_gui)
             except Exception as exc:
+                try:
+                    await self.ble.stop_notify()
+                except Exception:
+                    pass
+                try:
+                    await self.ble.disconnect()
+                except Exception:
+                    pass
                 self.state.ble_connected = False
                 self.state.device_status = "WAIT"
+                message = f"BLE接続失敗: {type(exc).__name__}: {exc}"
                 self._safe_ui(lambda: self.gui.set_ble_text("BLE: エラー"))
-                self._safe_ui(
-                    lambda: self.gui.set_status(f"BLE接続失敗: {type(exc).__name__}: {exc}")
-                )
-                self._safe_ui(
-                    lambda: self.gui.append_log(f"BLE接続失敗: {type(exc).__name__}: {exc}")
-                )
+                self._safe_ui(lambda: self.gui.set_status(message))
+                self._safe_ui(lambda: self.gui.append_log(message))
                 self._safe_ui(self._update_ble_status_led)
                 self._safe_ui(self._refresh_gui)
 
@@ -398,12 +414,9 @@ class AppController:
             except Exception as exc:
                 self.state.ble_connected = False
                 self.state.device_status = "WAIT"
-                self._safe_ui(
-                    lambda: self.gui.set_status(f"BLE切断失敗: {type(exc).__name__}: {exc}")
-                )
-                self._safe_ui(
-                    lambda: self.gui.append_log(f"BLE切断失敗: {type(exc).__name__}: {exc}")
-                )
+                message = f"BLE切断失敗: {type(exc).__name__}: {exc}"
+                self._safe_ui(lambda: self.gui.set_status(message))
+                self._safe_ui(lambda: self.gui.append_log(message))
                 self._safe_ui(self._update_ble_status_led)
                 self._safe_ui(self._refresh_gui)
 
@@ -419,8 +432,9 @@ class AppController:
                 self._safe_ui(lambda: self.gui.append_log(f"送信: {cmd}"))
                 self._safe_ui(self._refresh_gui)
             except Exception as exc:
-                self._safe_ui(lambda: self.gui.set_status(f"送信失敗: {type(exc).__name__}: {exc}"))
-                self._safe_ui(lambda: self.gui.append_log(f"送信失敗: {type(exc).__name__}: {exc}"))
+                message = f"送信失敗: {type(exc).__name__}: {exc}"
+                self._safe_ui(lambda: self.gui.set_status(message))
+                self._safe_ui(lambda: self.gui.append_log(message))
 
         self._submit_coro(_task())
 
@@ -434,8 +448,9 @@ class AppController:
                 self._safe_ui(lambda: self.gui.append_log(f"送信: {cmd}"))
                 self._safe_ui(self._refresh_gui)
             except Exception as exc:
-                self._safe_ui(lambda: self.gui.set_status(f"送信失敗: {type(exc).__name__}: {exc}"))
-                self._safe_ui(lambda: self.gui.append_log(f"送信失敗: {type(exc).__name__}: {exc}"))
+                message = f"送信失敗: {type(exc).__name__}: {exc}"
+                self._safe_ui(lambda: self.gui.set_status(message))
+                self._safe_ui(lambda: self.gui.append_log(message))
 
         self._submit_coro(_task())
 
@@ -449,8 +464,9 @@ class AppController:
                 self._safe_ui(lambda: self.gui.append_log(f"送信: {cmd}"))
                 self._safe_ui(self._refresh_gui)
             except Exception as exc:
-                self._safe_ui(lambda: self.gui.set_status(f"送信失敗: {type(exc).__name__}: {exc}"))
-                self._safe_ui(lambda: self.gui.append_log(f"送信失敗: {type(exc).__name__}: {exc}"))
+                message = f"送信失敗: {type(exc).__name__}: {exc}"
+                self._safe_ui(lambda: self.gui.set_status(message))
+                self._safe_ui(lambda: self.gui.append_log(message))
 
         self._submit_coro(_task())
 
