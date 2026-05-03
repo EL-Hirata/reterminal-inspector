@@ -1,5 +1,6 @@
 #!/bin/bash
-LOG=/home/pi/work/reterminal_inspector/autostart.log
+APP_DIR=/home/pi/work/reterminal_inspector
+LOG="$APP_DIR/autostart.log"
 
 {
   echo "===== $(date '+%F %T') ====="
@@ -13,8 +14,8 @@ LOG=/home/pi/work/reterminal_inspector/autostart.log
   echo "sudo_led_exit=$?"
 } >> "$LOG" 2>&1
 
-cd /home/pi/work/reterminal_inspector || exit 1
-source /home/pi/work/reterminal_inspector/.venv/bin/activate
+cd "$APP_DIR" || exit 1
+source "$APP_DIR/.venv/bin/activate"
 export DISPLAY=:0
 export XDG_RUNTIME_DIR=/run/user/1000
 exec python -m app.main >> "$LOG" 2>&1

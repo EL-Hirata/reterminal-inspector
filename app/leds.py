@@ -16,7 +16,7 @@ class ReTerminalLeds:
         return all(path.exists() for path in self.led_paths.values())
 
     def _write_value(self, path: Path, value: int) -> None:
-        cmd = ["sudo", "tee", str(path)]
+        cmd = ["sudo", "-n", "tee", str(path)]
         result = subprocess.run(
             cmd,
             input=str(value),
